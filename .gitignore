@@ -1,4 +1,4 @@
-.env/
-.idea/
-_pycache_/
-*~/
+.env
+.idea
+__pycache__/
+
