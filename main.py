@@ -8,6 +8,7 @@ from telebot.handler_backends import State, StatesGroup
 from telebot.storage import StateMemoryStorage
 from PIL import Image
 
+
 # Загружаем переменные из .env
 load_dotenv()
 
@@ -60,9 +61,9 @@ with conn.cursor() as cur:
     # Таблица пользователей
     cur.execute("""
     CREATE TABLE IF NOT EXISTS users (
-        id SERIAL PRIMARY KEY,
-        user_id INTEGER UNIQUE NOT NULL,
-        username VARCHAR(255) NOT NULL,
+        id SERIAL  PRIMARY KEY,
+        user_id    INTEGER UNIQUE NOT NULL,
+        username   VARCHAR(255)   NOT NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
     """)
@@ -70,8 +71,8 @@ with conn.cursor() as cur:
     # Общий словарь
     cur.execute("""
         CREATE TABLE IF NOT EXISTS words (
-            id SERIAL PRIMARY KEY,
-            target_word VARCHAR(255) UNIQUE NOT NULL,
+            id SERIAL      PRIMARY KEY,
+            target_word    VARCHAR(255) UNIQUE NOT NULL,
             translate_word VARCHAR(255) NOT NULL
         )
         """)
@@ -79,9 +80,9 @@ with conn.cursor() as cur:
     # Персональный словарь
     cur.execute("""
     CREATE TABLE IF NOT EXISTS user_words (
-        id SERIAL PRIMARY KEY,
-        user_id INTEGER NOT NULL REFERENCES users (user_id),
-        target_word VARCHAR(255) NOT NULL,
+        id SERIAL      PRIMARY KEY,
+        user_id        INTEGER      NOT NULL REFERENCES users (user_id),
+        target_word    VARCHAR(255) NOT NULL,
         translate_word VARCHAR(255) NOT NULL,
         UNIQUE (user_id, target_word)
     )
@@ -117,8 +118,12 @@ common_words = [
 # Заполнение общего словаря
 cursor.executemany("""
 INSERT INTO words (target_word, translate_word)
-SELECT %s, %s WHERE NOT EXISTS (
-    SELECT 1 FROM words WHERE target_word = %s AND translate_word = %s
+SELECT %s, %s 
+ WHERE NOT EXISTS (
+    SELECT 1 
+      FROM words 
+     WHERE target_word = %s 
+       AND translate_word = %s
 )
 """, [(w[0], w[1], w[0], w[1]) for w in common_words])
 conn.commit()
@@ -174,8 +179,8 @@ def create_cards(message):
                 WHERE user_words.user_id = %s 
                   AND words.target_word = user_words.target_word
         )
-        ORDER BY RANDOM() 
-        LIMIT 1
+      ORDER BY RANDOM() 
+         LIMIT 1
         """, (cid,))
     word = cursor.fetchone()
     print(f"Fetched word: {word}")
@@ -209,9 +214,11 @@ def create_cards(message):
 
     # Создаём кнопки для вариантов ответа
     cursor.execute("""
-        SELECT target_word FROM words 
-        WHERE target_word != %s 
-        ORDER BY RANDOM() LIMIT 3
+        SELECT target_word 
+          FROM words 
+         WHERE target_word != %s 
+      ORDER BY RANDOM() 
+         LIMIT 3
         """, (target_word,))
     other_words = [w[0] for w in cursor.fetchall()]
     options = other_words + [target_word]
@@ -274,9 +281,9 @@ def save_new_word(message):
         # Сохраняем новое слово в персональный словарь пользователя
         try:
             cursor.execute("""
-                INSERT INTO user_words (user_id, target_word, translate_word)
-                VALUES (%s, %s, %s)
-                ON CONFLICT (user_id, target_word) DO NOTHING
+            INSERT INTO user_words (user_id, target_word, translate_word)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (user_id, target_word) DO NOTHING
             """, (cid, target_word, translate_word))
             conn.commit()
             bot.send_message(cid, f"Слово '{target_word}' и его перевод '{translate_word}' успешно добавлены!")
@@ -287,25 +294,67 @@ def save_new_word(message):
     bot.delete_state(user_id=message.from_user.id, chat_id=cid)
 
 
-# @bot.message_handler(func=lambda message: message.text == 'Удалить слово 🔙')
-# def delete_word(message):
-#     bot.send_message(message.chat.id, "Введите слово на английском, которое вы хотите удалить:")
-#     bot.set_state(message.from_user.id, MyStates.target_word, message.chat.id)
-#
-#
-# @bot.message_handler(state=MyStates.target_word, content_types=['text'])
-# def process_delete_word(message):
-#     target_word = message.text
-#     user_id = message.chat.id
-#     cursor.execute("""
-#     DELETE FROM words
-#     WHERE user_id = %s
-#     AND target_word = %s
-#
-#     """, (user_id, target_word))
-#     conn.commit()
-#     bot.send_message(message.chat.id, f"Слово '{target_word}' удалено!")
-#     create_cards(message)
+@bot.message_handler(func=lambda message: message.text == 'Удалить слово 🔙')
+def start_remove_word(message):
+    cid = message.chat.id
+
+    # Получаем список слов из персонального словаря пользователя
+    cursor.execute("""
+        SELECT target_word 
+          FROM user_words
+         WHERE user_id = %s
+    """, (cid,))
+    words = [row[0] for row in cursor.fetchall()]
+
+    if not words:
+        bot.send_message(cid, "Ваш персональный словарь пуст. Добавьте новые слова перед удалением.")
+        return
+
+    # Создаём кнопки для выбора слова для удаления
+    markup = types.ReplyKeyboardMarkup(row_width=2)
+    buttons = [types.KeyboardButton(word) for word in words]
+    buttons.append(types.KeyboardButton('Отмена ❌'))
+    markup.add(*buttons)
+
+    bot.set_state(user_id=message.from_user.id, chat_id=message.chat.id, state=MyStates.target_word)
+    bot.send_message(cid, "Выберите слово, которое хотите удалить:", reply_markup=markup)
+
+
+@bot.message_handler(state=MyStates.target_word)
+def remove_word(message):
+    cid = message.chat.id
+    word = message.text.strip()
+
+    # Проверяем, что пользователь выбрал опцию "Отмена"
+    if word == 'Отмена ❌':
+        bot.delete_state(user_id=message.from_user.id, chat_id=message.chat.id)
+        bot.send_message(cid, "Удаление отменено.", reply_markup=types.ReplyKeyboardRemove())
+        return
+
+    # Проверяем, существует ли выбранное слово в персональном словаре
+    cursor.execute("""
+        SELECT 1 
+          FROM user_words
+         WHERE user_id = %s 
+           AND target_word = %s
+    """, (cid, word))
+    exists = cursor.fetchone()
+
+    if not exists:
+        bot.send_message(cid, "Указанное слово отсутствует в вашем словаре. Попробуйте снова.")
+        return
+
+    # Удаляем слово
+    cursor.execute("""
+        DELETE FROM user_words
+         WHERE user_id = %s 
+           AND target_word = %s
+    """, (cid, word))
+    conn.commit()
+
+    bot.send_message(cid, f"Слово '{word}' успешно удалено из вашего словаря!",
+                     reply_markup=types.ReplyKeyboardRemove())
+    bot.delete_state(user_id=message.from_user.id, chat_id=message.chat.id)
 
 
 @bot.message_handler(func=lambda message: True, content_types=['text'])
