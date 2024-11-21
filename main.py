@@ -101,10 +101,20 @@ def ensure_user_exists(user_id, username):
     conn.commit()
 
 
+class Command:
+    ADD_WORD = 'Добавить слово ➕'
+    DELETE_WORD = 'Удалить слово 🔙'
+    NEXT = 'Следующее слово ➡️'
+
+
 # Состояния
 class MyStates(StatesGroup):
     target_word = State()
     translate_word = State()
+    other_words = State()
+    adding_new_word = State()
+    saving_new_word = State()
+    deleting_word = State()
 
 
 # Общие слова для обучения
@@ -145,7 +155,7 @@ def send_welcome(message):
         print(f"Произошла ошибка при отправке стикера: {e}")
 
     bot.send_message(cid, f"Приветствую, {message.from_user.first_name}!\nЯ {bot.get_me().first_name}! "
-                          f"Начнём учить язык 🇬🇧\nУ тебя есть возможность использовать тренажёр, как конструктор, "
+                          f"Начнём учить язык 🇬🇧\nУ тебя есть возможность использовать тренажёр,\nкак конструктор, "
                           f"и собирать свою собственную базу для обучения.\nДля этого воспрользуйся инструментами:\n"
                           f"- добавить слово ➕\n"
                           f"- удалить слово 🔙\n"
@@ -157,17 +167,6 @@ def send_welcome(message):
 
 def create_cards(message):
     cid = message.chat.id
-
-    # Очистка предыдущего состояния
-    print(f"Deleting state for user {message.from_user.id}, chat {message.chat.id}")
-    bot.delete_state(user_id=message.from_user.id, chat_id=message.chat.id)
-    if bot.get_state(user_id=message.from_user.id, chat_id=message.chat.id):
-        print("State was not deleted")
-    state_after_deletion = bot.get_state(user_id=message.from_user.id, chat_id=message.chat.id)
-    print(f"State after deletion: {state_after_deletion}")
-
-    if state_after_deletion is not None:
-        print(f"Ошибка: состояние не очищено. State: {state_after_deletion}")
 
     # Получение случайного слова
     cursor.execute("""
@@ -183,20 +182,19 @@ def create_cards(message):
          LIMIT 1
         """, (cid,))
     word = cursor.fetchone()
-    print(f"Fetched word: {word}")
+    print(f"Случайное слово: {word}")
 
     if not word:
-        bot.send_message(cid, "Все слова изучены! Добавьте новые через 'Добавить слово ➕'.")
+        bot.send_message(cid, "Все слова изучены!\nДобавьте новые через 'Добавить слово ➕'.")
         print("Все слова изучены.")
         return
 
     target_word, translate_word = word
 
     # Установка нового состояния
-    print(f"Setting state: user_id={message.from_user.id}, chat_id={message.chat.id}, state={MyStates.target_word}")
     bot.set_state(user_id=message.from_user.id, chat_id=message.chat.id, state=MyStates.target_word)
     current_state = bot.get_state(user_id=message.from_user.id, chat_id=message.chat.id)
-    print(f"Current state after setting: {current_state}")
+    print(f"Текущее состояние: {current_state}")
 
     # Сохранение данных в состоянии
     with bot.retrieve_data(user_id=message.from_user.id, chat_id=message.chat.id) as data:
@@ -204,13 +202,10 @@ def create_cards(message):
         data['translate_word'] = translate_word
         if 'target_word' not in data or 'translate_word' not in data:
             print("Ошибка: данные не найдены в состоянии.")
-            print(f"Retrieved data for user {message.from_user.id}: {data}")
             return
 
     retrieved_state = bot.get_state(user_id=message.from_user.id, chat_id=message.chat.id)
-    print(f"Retrieved state after setting: {retrieved_state}")
-
-    print(f"Data saved to state: {data}")
+    print(f"Полученное состояние: {retrieved_state}")
 
     # Создаём кнопки для вариантов ответа
     cursor.execute("""
@@ -226,9 +221,9 @@ def create_cards(message):
 
     markup = types.ReplyKeyboardMarkup(row_width=2)
     buttons = [types.KeyboardButton(option) for option in options]
-    buttons.append(types.KeyboardButton('Следующее слово ➡️'))
-    buttons.append(types.KeyboardButton('Добавить слово ➕'))
-    buttons.append(types.KeyboardButton('Удалить слово 🔙'))
+    buttons.append(types.KeyboardButton(Command.NEXT))
+    buttons.append(types.KeyboardButton(Command.ADD_WORD))
+    buttons.append(types.KeyboardButton(Command.DELETE_WORD))
     markup.add(*buttons)
 
     # Отправляем сообщение
@@ -236,22 +231,22 @@ def create_cards(message):
     bot.send_message(cid, greeting, reply_markup=markup)
 
 
-@bot.message_handler(func=lambda message: message.text == 'Следующее слово ➡️')
+@bot.message_handler(func=lambda message: message.text == Command.NEXT)
 def next_word(message):
     create_cards(message)
 
 
-@bot.message_handler(func=lambda message: message.text == 'Добавить слово ➕')
+@bot.message_handler(func=lambda message: message.text == Command.ADD_WORD)
 def add_word_start(message):
     cid = message.chat.id
-    bot.set_state(user_id=message.from_user.id, chat_id=cid, state=MyStates.target_word)
+    bot.set_state(user_id=message.from_user.id, chat_id=cid, state=MyStates.adding_new_word)
     bot.send_message(cid, "Введите слово, которое вы хотите добавить, на английском:")
 
 
-@bot.message_handler(state=MyStates.target_word)
+@bot.message_handler(state=MyStates.adding_new_word)
 def add_translate_word(message):
     cid = message.chat.id
-    word = message.text.strip()
+    word = message.text.strip().capitalize()
 
     # Проверяем, что слово не пустое
     if not word:
@@ -261,83 +256,67 @@ def add_translate_word(message):
     with bot.retrieve_data(user_id=message.from_user.id, chat_id=cid) as data:
         data['target_word'] = word
 
-    bot.set_state(user_id=message.from_user.id, chat_id=cid, state=MyStates.translate_word)
+    bot.set_state(user_id=message.from_user.id, chat_id=cid, state=MyStates.saving_new_word)
     bot.send_message(cid, f"Теперь введите перевод для слова '{word}':")
 
 
-@bot.message_handler(state=MyStates.translate_word)
+@bot.message_handler(state=MyStates.saving_new_word)
 def save_new_word(message):
     cid = message.chat.id
-    translate_word = message.text.strip()
+    translation = message.text.strip().capitalize()
 
     # Проверяем, что перевод не пустой
-    if not translate_word:
+    if not translation:
         bot.send_message(cid, "Перевод не может быть пустым. Пожалуйста, введите перевод.")
         return
 
-    with bot.retrieve_data(user_id=message.from_user.id, chat_id=cid) as data:
-        target_word = data.get('target_word')
+    try:
+        # Извлекаем данные из состояния
+        with bot.retrieve_data(user_id=message.from_user.id, chat_id=cid) as data:
+            target_word = data.get('target_word').capitalize()
+
+        if not target_word:
+            bot.send_message(cid, "Ошибка! Попробуй снова начать с /start.")
+            bot.delete_state(user_id=message.from_user.id, chat_id=cid)
+            return
 
         # Сохраняем новое слово в персональный словарь пользователя
-        try:
-            cursor.execute("""
-            INSERT INTO user_words (user_id, target_word, translate_word)
-            VALUES (%s, %s, %s)
-            ON CONFLICT (user_id, target_word) DO NOTHING
-            """, (cid, target_word, translate_word))
-            conn.commit()
-            bot.send_message(cid, f"Слово '{target_word}' и его перевод '{translate_word}' успешно добавлены!")
-        except Exception as e:
-            print(f"Произошла ошибка при сохранении слова: {e}")
-            bot.send_message(cid, "Произошла ошибка при сохранении слова.")
 
-    bot.delete_state(user_id=message.from_user.id, chat_id=cid)
+        cursor.execute("""
+        INSERT INTO user_words (user_id, target_word, translate_word)
+        VALUES (%s, %s, %s)
+        ON CONFLICT (user_id, target_word) DO NOTHING
+        """, (message.from_user.id, target_word, translation))
+        conn.commit()
+
+        bot.send_message(cid, f"Слово '{target_word}' и его перевод '{translation}' успешно добавлены!")
+    except Exception as e:
+        print(f"Произошла ошибка при сохранении слова: {e}")
+        bot.send_message(cid, "Произошла ошибка при сохранении слова.")
+    finally:
+        bot.delete_state(user_id=message.from_user.id, chat_id=cid)
 
 
-@bot.message_handler(func=lambda message: message.text == 'Удалить слово 🔙')
-def start_remove_word(message):
+@bot.message_handler(func=lambda message: message.text == Command.DELETE_WORD)
+def delete_word_start(message):
     cid = message.chat.id
 
-    # Получаем список слов из персонального словаря пользователя
-    cursor.execute("""
-        SELECT target_word 
-          FROM user_words
-         WHERE user_id = %s
-    """, (cid,))
-    words = [row[0] for row in cursor.fetchall()]
-
-    if not words:
-        bot.send_message(cid, "Ваш персональный словарь пуст. Добавьте новые слова перед удалением.")
-        return
-
-    # Создаём кнопки для выбора слова для удаления
-    markup = types.ReplyKeyboardMarkup(row_width=2)
-    buttons = [types.KeyboardButton(word) for word in words]
-    buttons.append(types.KeyboardButton('Отмена ❌'))
-    markup.add(*buttons)
-
-    bot.set_state(user_id=message.from_user.id, chat_id=message.chat.id, state=MyStates.target_word)
-    bot.send_message(cid, "Выберите слово, которое хотите удалить:", reply_markup=markup)
+    bot.set_state(user_id=message.from_user.id, chat_id=message.chat.id, state=MyStates.deleting_word)
+    bot.send_message(cid, "Введите слово, которое хотите удалить из вашего словаря:")
 
 
-@bot.message_handler(state=MyStates.target_word)
-def remove_word(message):
+@bot.message_handler(state=MyStates.deleting_word)
+def delete_word(message):
     cid = message.chat.id
-    word = message.text.strip()
-
-    # Проверяем, что пользователь выбрал опцию "Отмена"
-    if word == 'Отмена ❌':
-        bot.delete_state(user_id=message.from_user.id, chat_id=message.chat.id)
-        bot.send_message(cid, "Удаление отменено.", reply_markup=types.ReplyKeyboardRemove())
-        return
+    word_to_delete = message.text.strip().capitalize()
 
     # Проверяем, существует ли выбранное слово в персональном словаре
     cursor.execute("""
-        SELECT 1 
+        SELECT 1
           FROM user_words
-         WHERE user_id = %s 
+         WHERE user_id = %s
            AND target_word = %s
-    """, (cid, word))
+    """, (cid, word_to_delete))
     exists = cursor.fetchone()
 
     if not exists:
@@ -347,25 +326,36 @@ def remove_word(message):
     # Удаляем слово
     cursor.execute("""
         DELETE FROM user_words
-         WHERE user_id = %s 
+         WHERE user_id = %s
            AND target_word = %s
-    """, (cid, word))
+    """, (cid, word_to_delete))
     conn.commit()
 
-    bot.send_message(cid, f"Слово '{word}' успешно удалено из вашего словаря!",
-                     reply_markup=types.ReplyKeyboardRemove())
+    bot.send_message(cid, f"Слово '{word_to_delete}' успешно удалено из вашего словаря!")
     bot.delete_state(user_id=message.from_user.id, chat_id=message.chat.id)
+    send_main_menu(cid)
+
+
+# Функция для отправки основного меню
+def send_main_menu(chat_id):
+    markup = types.ReplyKeyboardMarkup(row_width=2)
+    buttons = [
+        types.KeyboardButton(Command.ADD_WORD),
+        types.KeyboardButton(Command.DELETE_WORD),
+        types.KeyboardButton(Command.NEXT)
+    ]
+    markup.add(*buttons)
+    bot.send_message(chat_id, "Выберите дальнейшее действие:", reply_markup=markup)
 
 
 @bot.message_handler(func=lambda message: True, content_types=['text'])
 def message_reply(message):
     user_response = message.text
-
-    print(f"User response: {user_response}")
+    print(f"Ответ пользователя: {user_response}")
 
     # Проверяем текущее состояние
     state = bot.get_state(user_id=message.from_user.id, chat_id=message.chat.id)
-    print(f"Retrieved state for user {message.from_user.id}, chat {message.chat.id}: {state}")
+    print(f"Полученное состояние для пользователя {message.from_user.id}, чат {message.chat.id}: {state}")
 
     if state != MyStates.target_word.name:
         bot.send_message(message.chat.id, "Ошибка! Начните заново с /start.")
@@ -375,7 +365,7 @@ def message_reply(message):
     with bot.retrieve_data(message.from_user.id, message.chat.id) as data:
         target_word = data.get('target_word')
         translate_word = data.get('translate_word')
-        print(f"Retrieved state: target_word={target_word}, translate_word={translate_word}")
+        print(f"Данные из состояний: target_word={target_word}, translate_word={translate_word}")
 
     if not target_word or not translate_word:
         bot.send_message(message.chat.id, "Ошибка! Попробуй снова начать с /start.")
